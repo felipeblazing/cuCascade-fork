@@ -25,30 +25,34 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 using namespace cucascade;
 using cucascade::test::mock_data_representation;
 
+static_assert(std::is_same_v<shared_data_repository, data_repository>);
+
 // =============================================================================
 // Tests for shared_ptr based repository
 // =============================================================================
 
-TEST_CASE("shared_data_repository Construction", "[data_repository]")
+TEST_CASE("data_repository Construction", "[data_repository]")
 {
-  shared_data_repository repository;
+  data_repository repository;
 
   auto batch = repository.pop_next_data_batch();
   REQUIRE(batch == nullptr);
 }
 
-TEST_CASE("shared_data_repository Add and Pull Single Batch", "[data_repository]")
+TEST_CASE("data_repository Add and Pull Single Batch", "[data_repository]")
 {
-  shared_data_repository repository;
+  data_repository repository;
 
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   repository.add_data_batch(batch);
 
@@ -60,13 +64,13 @@ TEST_CASE("shared_data_repository Add and Pull Single Batch", "[data_repository]
   REQUIRE(empty == nullptr);
 }
 
-TEST_CASE("shared_data_repository FIFO Order", "[data_repository]")
+TEST_CASE("data_repository FIFO Order", "[data_repository]")
 {
-  shared_data_repository repository;
+  data_repository repository;
 
   for (uint64_t i = 1; i <= 5; ++i) {
     auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-    auto batch = std::make_shared<data_batch>(i, std::move(data));
+    auto batch = data_batch::make(i, std::move(data));
     repository.add_data_batch(batch);
   }
 
@@ -80,14 +84,14 @@ TEST_CASE("shared_data_repository FIFO Order", "[data_repository]")
   REQUIRE(empty == nullptr);
 }
 
-TEST_CASE("shared_data_repository Same Batch Multiple Repositories", "[data_repository]")
+TEST_CASE("data_repository Same Batch Multiple Repositories", "[data_repository]")
 {
-  shared_data_repository repo1;
-  shared_data_repository repo2;
-  shared_data_repository repo3;
+  data_repository repo1;
+  data_repository repo2;
+  data_repository repo3;
 
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(42, std::move(data));
+  auto batch = data_batch::make(42, std::move(data));
 
   repo1.add_data_batch(batch);
   repo2.add_data_batch(batch);
@@ -109,9 +113,9 @@ TEST_CASE("shared_data_repository Same Batch Multiple Repositories", "[data_repo
   REQUIRE(pulled2.get() == pulled3.get());
 }
 
-TEST_CASE("shared_data_repository Pull From Empty", "[data_repository]")
+TEST_CASE("data_repository Pull From Empty", "[data_repository]")
 {
-  shared_data_repository repository;
+  data_repository repository;
 
   for (int i = 0; i < 10; ++i) {
     auto batch = repository.pop_next_data_batch();
@@ -119,9 +123,9 @@ TEST_CASE("shared_data_repository Pull From Empty", "[data_repository]")
   }
 }
 
-TEST_CASE("shared_data_repository Thread-Safe Adding", "[data_repository]")
+TEST_CASE("data_repository Thread-Safe Adding", "[data_repository]")
 {
-  shared_data_repository repository;
+  data_repository repository;
 
   constexpr int num_threads        = 10;
   constexpr int batches_per_thread = 50;
@@ -133,7 +137,7 @@ TEST_CASE("shared_data_repository Thread-Safe Adding", "[data_repository]")
       for (int j = 0; j < batches_per_thread; ++j) {
         auto data         = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
         uint64_t batch_id = i * batches_per_thread + j;
-        auto batch        = std::make_shared<data_batch>(batch_id, std::move(data));
+        auto batch        = data_batch::make(batch_id, std::move(data));
         repository.add_data_batch(batch);
       }
     });
@@ -153,15 +157,15 @@ TEST_CASE("shared_data_repository Thread-Safe Adding", "[data_repository]")
   REQUIRE(count == num_threads * batches_per_thread);
 }
 
-TEST_CASE("shared_data_repository Thread-Safe Pulling", "[data_repository]")
+TEST_CASE("data_repository Thread-Safe Pulling", "[data_repository]")
 {
-  shared_data_repository repository;
+  data_repository repository;
 
   constexpr int num_batches = 500;
 
   for (int i = 0; i < num_batches; ++i) {
     auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-    auto batch = std::make_shared<data_batch>(i, std::move(data));
+    auto batch = data_batch::make(i, std::move(data));
     repository.add_data_batch(batch);
   }
 
@@ -194,17 +198,16 @@ TEST_CASE("shared_data_repository Thread-Safe Pulling", "[data_repository]")
   REQUIRE(empty == nullptr);
 }
 
-TEST_CASE("shared_data_repository Thread-Safe Pulling with Multiple Partitions",
-          "[data_repository]")
+TEST_CASE("data_repository Thread-Safe Pulling with Multiple Partitions", "[data_repository]")
 {
-  shared_data_repository repository;
+  data_repository repository;
 
   constexpr int num_batches    = 500;
   constexpr int num_partitions = 30;
 
   for (int i = 0; i < num_batches; ++i) {
     auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-    auto batch = std::make_shared<data_batch>(i, std::move(data));
+    auto batch = data_batch::make(i, std::move(data));
     repository.add_data_batch(batch, i % num_partitions);
   }
 
@@ -244,302 +247,43 @@ TEST_CASE("shared_data_repository Thread-Safe Pulling with Multiple Partitions",
 }
 
 // =============================================================================
-// Tests for unique_ptr based repository
-// =============================================================================
-
-TEST_CASE("unique_data_repository Construction", "[data_repository]")
-{
-  unique_data_repository repository;
-
-  auto batch = repository.pop_next_data_batch();
-  REQUIRE(batch == nullptr);
-}
-
-TEST_CASE("unique_data_repository Add and Pull Single Batch", "[data_repository]")
-{
-  unique_data_repository repository;
-
-  auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_unique<data_batch>(1, std::move(data));
-
-  repository.add_data_batch(std::move(batch));
-
-  auto pulled_batch = repository.pop_next_data_batch();
-  REQUIRE(pulled_batch != nullptr);
-  REQUIRE(pulled_batch->get_batch_id() == 1);
-
-  auto empty = repository.pop_next_data_batch();
-  REQUIRE(empty == nullptr);
-}
-
-TEST_CASE("unique_data_repository FIFO Order", "[data_repository]")
-{
-  unique_data_repository repository;
-
-  for (uint64_t i = 1; i <= 5; ++i) {
-    auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-    auto batch = std::make_unique<data_batch>(i, std::move(data));
-    repository.add_data_batch(std::move(batch));
-  }
-
-  for (uint64_t i = 1; i <= 5; ++i) {
-    auto pulled_batch = repository.pop_next_data_batch();
-    REQUIRE(pulled_batch != nullptr);
-    REQUIRE(pulled_batch->get_batch_id() == i);
-  }
-
-  auto empty = repository.pop_next_data_batch();
-  REQUIRE(empty == nullptr);
-}
-
-TEST_CASE("unique_data_repository Large Number of Batches", "[data_repository]")
-{
-  unique_data_repository repository;
-
-  constexpr int num_batches = 1000;
-
-  for (int i = 0; i < num_batches; ++i) {
-    auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-    auto batch = std::make_unique<data_batch>(i, std::move(data));
-    repository.add_data_batch(std::move(batch));
-  }
-
-  int count = 0;
-  while (true) {
-    auto batch = repository.pop_next_data_batch();
-    if (!batch) break;
-    ++count;
-  }
-
-  REQUIRE(count == num_batches);
-}
-
-TEST_CASE("unique_data_repository Interleaved Add and Pull", "[data_repository]")
-{
-  unique_data_repository repository;
-
-  for (int cycle = 0; cycle < 50; ++cycle) {
-    for (int i = 0; i < 3; ++i) {
-      auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-      auto batch = std::make_unique<data_batch>(cycle * 3 + i, std::move(data));
-      repository.add_data_batch(std::move(batch));
-    }
-
-    auto batch = repository.pop_next_data_batch();
-    REQUIRE(batch != nullptr);
-  }
-
-  int remaining = 0;
-  while (true) {
-    auto batch = repository.pop_next_data_batch();
-    if (!batch) break;
-    ++remaining;
-  }
-
-  // Should have 50 cycles * 3 adds - 50 pulls = 100 remaining
-  REQUIRE(remaining == 100);
-}
-
-TEST_CASE("unique_data_repository Thread-Safe Adding", "[data_repository]")
-{
-  unique_data_repository repository;
-
-  constexpr int num_threads        = 10;
-  constexpr int batches_per_thread = 50;
-
-  std::vector<std::thread> threads;
-
-  for (int i = 0; i < num_threads; ++i) {
-    threads.emplace_back([&, i]() {
-      for (int j = 0; j < batches_per_thread; ++j) {
-        auto data         = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-        uint64_t batch_id = i * batches_per_thread + j;
-        auto batch        = std::make_unique<data_batch>(batch_id, std::move(data));
-        repository.add_data_batch(std::move(batch));
-      }
-    });
-  }
-
-  for (auto& thread : threads) {
-    thread.join();
-  }
-
-  int count = 0;
-  while (true) {
-    auto batch = repository.pop_next_data_batch();
-    if (!batch) break;
-    ++count;
-  }
-
-  REQUIRE(count == num_threads * batches_per_thread);
-}
-
-TEST_CASE("unique_data_repository Thread-Safe Pulling", "[data_repository]")
-{
-  unique_data_repository repository;
-
-  constexpr int num_batches = 500;
-
-  for (int i = 0; i < num_batches; ++i) {
-    auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-    auto batch = std::make_unique<data_batch>(i, std::move(data));
-    repository.add_data_batch(std::move(batch));
-  }
-
-  constexpr int num_threads = 10;
-  std::vector<std::thread> threads;
-  std::vector<int> thread_counts(num_threads, 0);
-
-  for (int i = 0; i < num_threads; ++i) {
-    threads.emplace_back([&, i]() {
-      while (true) {
-        auto batch = repository.pop_next_data_batch();
-        if (!batch) break;
-        ++thread_counts[i];
-      }
-    });
-  }
-
-  for (auto& thread : threads) {
-    thread.join();
-  }
-
-  int total_count = 0;
-  for (int count : thread_counts) {
-    total_count += count;
-  }
-
-  REQUIRE(total_count == num_batches);
-
-  auto empty = repository.pop_next_data_batch();
-  REQUIRE(empty == nullptr);
-}
-
-TEST_CASE("unique_data_repository Concurrent Add and Pull", "[data_repository]")
-{
-  unique_data_repository repository;
-
-  constexpr int num_add_threads    = 5;
-  constexpr int num_pull_threads   = 5;
-  constexpr int batches_per_thread = 100;
-
-  std::vector<std::thread> threads;
-  std::atomic<int> pulled_count{0};
-
-  for (int i = 0; i < num_add_threads; ++i) {
-    threads.emplace_back([&, i]() {
-      for (int j = 0; j < batches_per_thread; ++j) {
-        auto data         = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-        uint64_t batch_id = i * batches_per_thread + j;
-        auto batch        = std::make_unique<data_batch>(batch_id, std::move(data));
-        repository.add_data_batch(std::move(batch));
-
-        std::this_thread::sleep_for(std::chrono::microseconds(10));
-      }
-    });
-  }
-
-  for (int i = 0; i < num_pull_threads; ++i) {
-    threads.emplace_back([&]() {
-      int local_count = 0;
-      while (local_count < batches_per_thread) {
-        auto batch = repository.pop_next_data_batch();
-        if (batch) {
-          ++local_count;
-          ++pulled_count;
-        } else {
-          std::this_thread::yield();
-        }
-      }
-    });
-  }
-
-  for (auto& thread : threads) {
-    thread.join();
-  }
-
-  REQUIRE(pulled_count == num_add_threads * batches_per_thread);
-}
-
-TEST_CASE("unique_data_repository High Contention", "[data_repository]")
-{
-  unique_data_repository repository;
-
-  constexpr int num_threads           = 20;
-  constexpr int operations_per_thread = 50;
-
-  std::vector<std::thread> threads;
-  std::atomic<int> total_added{0};
-  std::atomic<int> total_pulled{0};
-
-  for (int i = 0; i < num_threads; ++i) {
-    threads.emplace_back([&, i]() {
-      for (int j = 0; j < operations_per_thread; ++j) {
-        auto data         = std::make_unique<mock_data_representation>(memory::Tier::GPU, 512);
-        uint64_t batch_id = i * operations_per_thread + j;
-        auto batch        = std::make_unique<data_batch>(batch_id, std::move(data));
-        repository.add_data_batch(std::move(batch));
-        ++total_added;
-
-        auto pulled = repository.pop_next_data_batch();
-        if (pulled) { ++total_pulled; }
-      }
-    });
-  }
-
-  for (auto& thread : threads) {
-    thread.join();
-  }
-
-  REQUIRE(total_added == num_threads * operations_per_thread);
-
-  while (true) {
-    auto batch = repository.pop_next_data_batch();
-    if (!batch) break;
-    ++total_pulled;
-  }
-
-  REQUIRE(total_pulled == total_added);
-}
-
-// =============================================================================
 // Tests for size()
 // =============================================================================
 
-TEST_CASE("shared_data_repository size Empty", "[data_repository]")
+TEST_CASE("data_repository size Empty", "[data_repository]")
 {
-  shared_data_repository repository;
+  data_repository repository;
   REQUIRE(repository.size() == 0);
 }
 
-TEST_CASE("shared_data_repository size After Adding", "[data_repository]")
+TEST_CASE("data_repository size After Adding", "[data_repository]")
 {
-  shared_data_repository repository;
+  data_repository repository;
 
   REQUIRE(repository.size() == 0);
 
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
   repository.add_data_batch(batch);
 
   REQUIRE(repository.size() == 1);
 
   for (int i = 2; i <= 5; ++i) {
     auto data2  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-    auto batch2 = std::make_shared<data_batch>(i, std::move(data2));
+    auto batch2 = data_batch::make(i, std::move(data2));
     repository.add_data_batch(batch2);
   }
 
   REQUIRE(repository.size() == 5);
 }
 
-TEST_CASE("shared_data_repository size After Pulling", "[data_repository]")
+TEST_CASE("data_repository size After Pulling", "[data_repository]")
 {
-  shared_data_repository repository;
+  data_repository repository;
 
   for (int i = 1; i <= 5; ++i) {
     auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-    auto batch = std::make_shared<data_batch>(i, std::move(data));
+    auto batch = data_batch::make(i, std::move(data));
     repository.add_data_batch(batch);
   }
 
@@ -556,16 +300,16 @@ TEST_CASE("shared_data_repository size After Pulling", "[data_repository]")
   REQUIRE(repository.size() == 0);
 }
 
-TEST_CASE("shared_data_repository size Interleaved Operations", "[data_repository]")
+TEST_CASE("data_repository size Interleaved Operations", "[data_repository]")
 {
-  shared_data_repository repository;
+  data_repository repository;
 
   REQUIRE(repository.size() == 0);
 
   for (int cycle = 0; cycle < 10; ++cycle) {
     for (int i = 0; i < 3; ++i) {
       auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-      auto batch = std::make_shared<data_batch>(cycle * 3 + i, std::move(data));
+      auto batch = data_batch::make(cycle * 3 + i, std::move(data));
       repository.add_data_batch(batch);
     }
 
@@ -585,88 +329,9 @@ TEST_CASE("shared_data_repository size Interleaved Operations", "[data_repositor
   REQUIRE(repository.size() == 0);
 }
 
-TEST_CASE("unique_data_repository size Empty", "[data_repository]")
+TEST_CASE("data_repository size Thread-Safe", "[data_repository]")
 {
-  unique_data_repository repository;
-  REQUIRE(repository.size() == 0);
-}
-
-TEST_CASE("unique_data_repository size After Adding", "[data_repository]")
-{
-  unique_data_repository repository;
-
-  REQUIRE(repository.size() == 0);
-
-  auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_unique<data_batch>(1, std::move(data));
-  repository.add_data_batch(std::move(batch));
-
-  REQUIRE(repository.size() == 1);
-
-  for (int i = 2; i <= 5; ++i) {
-    auto data2  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-    auto batch2 = std::make_unique<data_batch>(i, std::move(data2));
-    repository.add_data_batch(std::move(batch2));
-  }
-
-  REQUIRE(repository.size() == 5);
-}
-
-TEST_CASE("unique_data_repository size After Pulling", "[data_repository]")
-{
-  unique_data_repository repository;
-
-  for (int i = 1; i <= 5; ++i) {
-    auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-    auto batch = std::make_unique<data_batch>(i, std::move(data));
-    repository.add_data_batch(std::move(batch));
-  }
-
-  REQUIRE(repository.size() == 5);
-
-  for (int i = 1; i <= 4; ++i) {
-    auto batch = repository.pop_next_data_batch();
-    REQUIRE(batch != nullptr);
-    REQUIRE(repository.size() == (5 - i));
-  }
-
-  auto last_batch = repository.pop_next_data_batch();
-  REQUIRE(last_batch != nullptr);
-  REQUIRE(repository.size() == 0);
-}
-
-TEST_CASE("unique_data_repository size Interleaved Operations", "[data_repository]")
-{
-  unique_data_repository repository;
-
-  REQUIRE(repository.size() == 0);
-
-  for (int cycle = 0; cycle < 10; ++cycle) {
-    for (int i = 0; i < 3; ++i) {
-      auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-      auto batch = std::make_unique<data_batch>(cycle * 3 + i, std::move(data));
-      repository.add_data_batch(std::move(batch));
-    }
-
-    REQUIRE(repository.size() == (cycle * 2 + 3));
-
-    auto batch = repository.pop_next_data_batch();
-    REQUIRE(batch != nullptr);
-
-    REQUIRE(repository.size() == (cycle * 2 + 2));
-  }
-
-  while (repository.size() > 0) {
-    auto batch = repository.pop_next_data_batch();
-    REQUIRE(batch != nullptr);
-  }
-
-  REQUIRE(repository.size() == 0);
-}
-
-TEST_CASE("shared_data_repository size Thread-Safe", "[data_repository]")
-{
-  shared_data_repository repository;
+  data_repository repository;
 
   constexpr int num_threads        = 10;
   constexpr int batches_per_thread = 100;
@@ -679,7 +344,7 @@ TEST_CASE("shared_data_repository size Thread-Safe", "[data_repository]")
       for (int j = 0; j < batches_per_thread; ++j) {
         auto data         = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
         uint64_t batch_id = i * batches_per_thread + j;
-        auto batch        = std::make_shared<data_batch>(batch_id, std::move(data));
+        auto batch        = data_batch::make(batch_id, std::move(data));
         repository.add_data_batch(batch);
 
         if (repository.size() > 0) { ++availability_check_count; }
@@ -695,40 +360,9 @@ TEST_CASE("shared_data_repository size Thread-Safe", "[data_repository]")
   REQUIRE(repository.size() > 0);
 }
 
-TEST_CASE("unique_data_repository size Thread-Safe", "[data_repository]")
+TEST_CASE("data_repository size Concurrent Operations", "[data_repository]")
 {
-  unique_data_repository repository;
-
-  constexpr int num_threads        = 10;
-  constexpr int batches_per_thread = 100;
-
-  std::vector<std::thread> threads;
-  std::atomic<int> availability_check_count{0};
-
-  for (int i = 0; i < num_threads; ++i) {
-    threads.emplace_back([&, i]() {
-      for (int j = 0; j < batches_per_thread; ++j) {
-        auto data         = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-        uint64_t batch_id = i * batches_per_thread + j;
-        auto batch        = std::make_unique<data_batch>(batch_id, std::move(data));
-        repository.add_data_batch(std::move(batch));
-
-        if (repository.size() > 0) { ++availability_check_count; }
-      }
-    });
-  }
-
-  for (auto& thread : threads) {
-    thread.join();
-  }
-
-  REQUIRE(availability_check_count == num_threads * batches_per_thread);
-  REQUIRE(repository.size() > 0);
-}
-
-TEST_CASE("shared_data_repository size Concurrent Operations", "[data_repository]")
-{
-  shared_data_repository repository;
+  data_repository repository;
 
   constexpr int num_add_threads  = 5;
   constexpr int num_pull_threads = 5;
@@ -741,7 +375,7 @@ TEST_CASE("shared_data_repository size Concurrent Operations", "[data_repository
       for (int j = 0; j < operations; ++j) {
         auto data         = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
         uint64_t batch_id = i * operations + j;
-        auto batch        = std::make_shared<data_batch>(batch_id, std::move(data));
+        auto batch        = data_batch::make(batch_id, std::move(data));
         repository.add_data_batch(batch);
         std::this_thread::sleep_for(std::chrono::microseconds(10));
       }
@@ -774,14 +408,14 @@ std::vector<std::shared_ptr<data_batch>> create_test_batches(std::vector<uint64_
   std::vector<std::shared_ptr<data_batch>> batches;
   for (auto batch_id : batch_ids) {
     auto data = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-    batches.emplace_back(std::make_shared<data_batch>(batch_id, std::move(data)));
+    batches.emplace_back(data_batch::make(batch_id, std::move(data)));
   }
   return batches;
 }
 
-TEST_CASE("shared_data_repository pop Multiple Partitions", "[data_repository]")
+TEST_CASE("data_repository pop Multiple Partitions", "[data_repository]")
 {
-  shared_data_repository repository;
+  data_repository repository;
 
   std::vector<uint64_t> batch_ids0 = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
   auto batches                     = create_test_batches(batch_ids0);
@@ -844,9 +478,50 @@ TEST_CASE("shared_data_repository pop Multiple Partitions", "[data_repository]")
   REQUIRE(retrieved_batch_ids2.empty());
 }
 
-TEST_CASE("shared_data_repository pop by id", "[data_repository]")
+TEST_CASE("data_repository set_num_partitions grows and validates size(p)", "[data_repository]")
 {
-  shared_data_repository repository;
+  data_repository repository;
+
+  // A fresh repository starts with a single partition; size(p>0) is out of range.
+  REQUIRE(repository.num_partitions() == 1);
+  REQUIRE_THROWS_AS(repository.size(1), std::out_of_range);
+
+  // Growing to 4 partitions makes every index in [0, 4) queryable and empty.
+  repository.set_num_partitions(4);
+  REQUIRE(repository.num_partitions() == 4);
+  for (std::size_t p = 0; p < 4; ++p) {
+    REQUIRE(repository.size(p) == 0);
+  }
+
+  // Existing data in partition 0 is preserved across the grow.
+  auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
+  auto batch = data_batch::make(7, std::move(data));
+  repository.add_data_batch(batch, 3);
+  repository.set_num_partitions(8);
+  REQUIRE(repository.num_partitions() == 8);
+  REQUIRE(repository.size(3) == 1);
+  REQUIRE(repository.size(7) == 0);
+}
+
+TEST_CASE("data_repository set_num_partitions rejects non-growing counts", "[data_repository]")
+{
+  data_repository repository;
+  repository.set_num_partitions(3);
+
+  // Zero is never valid.
+  REQUIRE_THROWS_AS(repository.set_num_partitions(0), std::invalid_argument);
+
+  // Equal to or smaller than the current count is rejected (grow-only).
+  REQUIRE_THROWS_AS(repository.set_num_partitions(3), std::invalid_argument);
+  REQUIRE_THROWS_AS(repository.set_num_partitions(2), std::invalid_argument);
+
+  // The failed calls leave the partition count untouched.
+  REQUIRE(repository.num_partitions() == 3);
+}
+
+TEST_CASE("data_repository pop by id", "[data_repository]")
+{
+  data_repository repository;
 
   std::vector<uint64_t> batch_ids0 = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
   auto batches                     = create_test_batches(batch_ids0);
@@ -862,9 +537,9 @@ TEST_CASE("shared_data_repository pop by id", "[data_repository]")
   }
 }
 
-TEST_CASE("shared_data_repository pop Non-existent Batch ID", "[data_repository]")
+TEST_CASE("data_repository pop Non-existent Batch ID", "[data_repository]")
 {
-  shared_data_repository repository;
+  data_repository repository;
 
   auto batches = create_test_batches({0, 1, 2, 3, 4, 5, 6, 7, 8, 9});
   for (auto& batch : batches) {
@@ -874,10 +549,9 @@ TEST_CASE("shared_data_repository pop Non-existent Batch ID", "[data_repository]
   REQUIRE(batch == nullptr);
 }
 
-TEST_CASE("shared_data_repository using get_data_batch_by_id Multiple Partitions",
-          "[data_repository]")
+TEST_CASE("data_repository using get_data_batch_by_id Multiple Partitions", "[data_repository]")
 {
-  shared_data_repository repository;
+  data_repository repository;
 
   auto batches                 = create_test_batches({0, 1, 2, 3, 4, 5, 6, 7, 8, 9});
   constexpr int num_partitions = 3;
@@ -916,31 +590,22 @@ TEST_CASE("shared_data_repository using get_data_batch_by_id Multiple Partitions
   REQUIRE(repository.total_size() == 0);
 }
 
-TEST_CASE("unique_data_repository throws an error when trying to get a batch by id",
-          "[data_repository]")
-{
-  unique_data_repository repository;
-  REQUIRE_THROWS_WITH(repository.get_data_batch_by_id(0, 0),
-                      "get_data_batch_by_id is not supported for unique_ptr repositories. Use "
-                      "pop_data_batch to move ownership instead.");
-}
-
 // =============================================================================
 // Tests for pop_next_data_batch
 // =============================================================================
 
-TEST_CASE("shared_data_repository pop_next_data_batch empty returns nullptr", "[data_repository]")
+TEST_CASE("data_repository pop_next_data_batch empty returns nullptr", "[data_repository]")
 {
-  shared_data_repository repository;
+  data_repository repository;
   REQUIRE(repository.pop_next_data_batch() == nullptr);
 }
 
-TEST_CASE("shared_data_repository pop_next_data_batch returns idle batch", "[data_repository]")
+TEST_CASE("data_repository pop_next_data_batch returns idle batch", "[data_repository]")
 {
-  shared_data_repository repository;
+  data_repository repository;
 
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
   repository.add_data_batch(batch);
 
   auto popped = repository.pop_next_data_batch();
@@ -949,12 +614,12 @@ TEST_CASE("shared_data_repository pop_next_data_batch returns idle batch", "[dat
   REQUIRE(repository.pop_next_data_batch() == nullptr);
 }
 
-TEST_CASE("shared_data_repository pop_next_data_batch returns read_only batch", "[data_repository]")
+TEST_CASE("data_repository pop_next_data_batch returns read_only batch", "[data_repository]")
 {
-  shared_data_repository repository;
+  data_repository repository;
 
   auto data     = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch    = std::make_shared<data_batch>(2, std::move(data));
+  auto batch    = data_batch::make(2, std::move(data));
   auto accessor = batch->to_read_only();
   repository.add_data_batch(batch);
 
@@ -963,12 +628,12 @@ TEST_CASE("shared_data_repository pop_next_data_batch returns read_only batch", 
   REQUIRE(popped->get_batch_id() == 2);
 }
 
-TEST_CASE("shared_data_repository pop_next_data_batch returns mutable batch", "[data_repository]")
+TEST_CASE("data_repository pop_next_data_batch returns mutable batch", "[data_repository]")
 {
-  shared_data_repository repository;
+  data_repository repository;
 
   auto data     = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch    = std::make_shared<data_batch>(3, std::move(data));
+  auto batch    = data_batch::make(3, std::move(data));
   auto accessor = batch->to_mutable();
   repository.add_data_batch(batch);
 
@@ -977,17 +642,16 @@ TEST_CASE("shared_data_repository pop_next_data_batch returns mutable batch", "[
   REQUIRE(popped->get_batch_id() == 3);
 }
 
-TEST_CASE("shared_data_repository pop_next_data_batch FIFO regardless of state",
-          "[data_repository]")
+TEST_CASE("data_repository pop_next_data_batch FIFO regardless of state", "[data_repository]")
 {
-  shared_data_repository repository;
+  data_repository repository;
 
   auto data1  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch1 = std::make_shared<data_batch>(1, std::move(data1));
+  auto batch1 = data_batch::make(1, std::move(data1));
   auto data2  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch2 = std::make_shared<data_batch>(2, std::move(data2));
+  auto batch2 = data_batch::make(2, std::move(data2));
   auto data3  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch3 = std::make_shared<data_batch>(3, std::move(data3));
+  auto batch3 = data_batch::make(3, std::move(data3));
 
   // batch1 read_only, batch2 mutable, batch3 idle — all three should come out in order
   auto ro_accessor  = batch1->to_read_only();
@@ -1012,14 +676,14 @@ TEST_CASE("shared_data_repository pop_next_data_batch FIFO regardless of state",
   REQUIRE(repository.pop_next_data_batch() == nullptr);
 }
 
-TEST_CASE("shared_data_repository pop_next_data_batch with partitions", "[data_repository]")
+TEST_CASE("data_repository pop_next_data_batch with partitions", "[data_repository]")
 {
-  shared_data_repository repository;
+  data_repository repository;
 
   auto data1    = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch1   = std::make_shared<data_batch>(1, std::move(data1));
+  auto batch1   = data_batch::make(1, std::move(data1));
   auto data2    = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch2   = std::make_shared<data_batch>(2, std::move(data2));
+  auto batch2   = data_batch::make(2, std::move(data2));
   auto accessor = batch1->to_read_only();
 
   repository.add_data_batch(batch1, 0);
@@ -1035,34 +699,4 @@ TEST_CASE("shared_data_repository pop_next_data_batch with partitions", "[data_r
 
   REQUIRE(repository.pop_next_data_batch(0) == nullptr);
   REQUIRE(repository.pop_next_data_batch(1) == nullptr);
-}
-
-TEST_CASE("unique_data_repository pop_next_data_batch empty returns nullptr", "[data_repository]")
-{
-  unique_data_repository repository;
-  REQUIRE(repository.pop_next_data_batch() == nullptr);
-}
-
-TEST_CASE("unique_data_repository pop_next_data_batch returns batch regardless of state",
-          "[data_repository]")
-{
-  unique_data_repository repository;
-
-  auto data1  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch1 = std::make_unique<data_batch>(1, std::move(data1));
-  auto data2  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch2 = std::make_unique<data_batch>(2, std::move(data2));
-
-  repository.add_data_batch(std::move(batch1));
-  repository.add_data_batch(std::move(batch2));
-
-  auto p1 = repository.pop_next_data_batch();
-  REQUIRE(p1 != nullptr);
-  REQUIRE(p1->get_batch_id() == 1);
-
-  auto p2 = repository.pop_next_data_batch();
-  REQUIRE(p2 != nullptr);
-  REQUIRE(p2->get_batch_id() == 2);
-
-  REQUIRE(repository.pop_next_data_batch() == nullptr);
 }

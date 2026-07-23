@@ -15,16 +15,23 @@
  * limitations under the License.
  */
 
-#include <cucascade/data/data_batch.hpp>
-#include <cucascade/data/data_repository_manager.hpp>
+#pragma once
 
-// Template class implementation is in the header file.
-// This file is kept for build system compatibility and explicit template instantiations.
+#include <cucascade/data/representation_converter.hpp>
 
 namespace cucascade {
 
-// Explicit template instantiations for common pointer types
-template class data_repository_manager<std::shared_ptr<data_batch>>;
-template class data_repository_manager<std::unique_ptr<data_batch>>;
+/**
+ * @brief Initialize the cudf-backed built-in representation converters.
+ *
+ * Registers converters between all supported cudf-backed representation types (GPU, HOST, DISK).
+ * Disk converters resolve the I/O backend from the disk memory_space at conversion time, so each
+ * disk memory_space can use a different backend.
+ *
+ * This is provided by the cucascade-cudf library; the cudf-free core registry ships empty.
+ *
+ * @param registry The converter registry to register converters with.
+ */
+void register_builtin_converters(representation_converter_registry& registry);
 
 }  // namespace cucascade

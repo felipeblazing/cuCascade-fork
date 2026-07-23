@@ -164,6 +164,12 @@ A `data_batch` wraps a data representation and controls access through three sta
 reader-writer lock model. Data is only accessible through RAII accessor objects that hold the
 appropriate lock — the idle `data_batch` pointer grants no data access.
 
+Construct batches with the factory so they are always managed by the shared ownership required by the transition API:
+
+```cpp
+auto batch = data_batch::make(batch_id, std::move(representation));
+```
+
 | State | Meaning |
 |-------|---------|
 | `idle` | No active locks. Available for reading, mutation, or tier movement. |
@@ -291,7 +297,10 @@ The `representation_converter_registry` stores conversion functions indexed by `
 ```cpp
 // Register a custom converter
 registry.register_converter<gpu_table_representation, host_data_representation>(
-    [](idata_representation& source, const memory_space* target, rmm::cuda_stream_view stream)
+    [](idata_representation& source,
+       const memory_space* target,
+       rmm::cuda_stream_view stream,
+       memory::reservation* reservation)
         -> std::unique_ptr<idata_representation> {
         // Convert GPU table to host (direct copy)
         return ...;
@@ -301,6 +310,10 @@ registry.register_converter<gpu_table_representation, host_data_representation>(
 // Convert data
 auto host_data = registry.convert<host_data_representation>(
     *gpu_data, target_host_space, stream);
+
+// Convert using a caller-owned target reservation
+auto reserved_host_data = registry.convert<host_data_representation>(
+    *gpu_data, target_reservation, stream);
 ```
 
 The registry is thread-safe (all operations guarded by `std::mutex`).
@@ -396,7 +409,8 @@ empty. Callers poll or check `empty()` / `total_size()` to determine whether to 
 
 ### Partitioning
 
-Repositories use `std::vector<std::vector<PtrType>>` for partitioned storage. Each partition is an independent FIFO queue:
+Repositories use `std::vector<std::vector<std::shared_ptr<data_batch>>>` for partitioned storage.
+Each partition is an independent FIFO queue:
 
 ```cpp
 // Partition 0: pipeline A data
@@ -409,14 +423,14 @@ repository.add_data_batch(batch_b, 1);
 auto batch = repository.pop_data_batch(batch_state::task_created, 0);
 ```
 
-### shared_ptr vs unique_ptr Repositories
+### Shared Ownership
 
-| Type | Alias | Use Case |
-|------|-------|----------|
-| `idata_repository<shared_ptr<data_batch>>` | `shared_data_repository` | Same batch shared across multiple repositories (fan-out) |
-| `idata_repository<unique_ptr<data_batch>>` | `unique_data_repository` | Each batch owned by exactly one repository |
+| Type | Compatibility Alias | Use Case |
+|------|---------------------|----------|
+| `data_repository` | `shared_data_repository` | Same batch shared across multiple repositories (fan-out) |
 
-Key difference: `get_data_batch_by_id()` (non-removing access) is only available with `shared_ptr` repositories.
+Repositories use `shared_ptr<data_batch>` because batches are created by `data_batch::make()` and
+the accessor transition API uses `shared_from_this()`.
 
 ---
 
@@ -430,9 +444,9 @@ Repositories are indexed by `(operator_id, port_id)` pairs:
 
 ```cpp
 // Add repositories for different operators
-manager.add_new_repository(0, "output", std::make_unique<shared_data_repository>());
-manager.add_new_repository(1, "input", std::make_unique<shared_data_repository>());
-manager.add_new_repository(1, "output", std::make_unique<shared_data_repository>());
+manager.add_new_repository(0, "output", std::make_unique<data_repository>());
+manager.add_new_repository(1, "input", std::make_unique<data_repository>());
+manager.add_new_repository(1, "output", std::make_unique<data_repository>());
 
 // Access a specific repository
 auto& repo = manager.get_repository(1, "input");
@@ -453,9 +467,6 @@ The `add_data_batch()` method distributes a batch to one or more repositories:
 ```cpp
 // shared_ptr: same batch goes to multiple repositories
 manager.add_data_batch(shared_batch, {{0, "output"}, {1, "input"}});
-
-// unique_ptr: batch goes to exactly one repository (throws if multiple specified)
-manager.add_data_batch(std::move(unique_batch), {{1, "input"}});
 ```
 
 The manager also provides `get_data_batches_for_downgrade()` to find batches eligible for tier demotion based on their memory space.
@@ -509,7 +520,7 @@ Application
 |------|---------|
 | `include/cucascade/data/common.hpp` | `idata_representation` abstract interface |
 | `include/cucascade/data/data_batch.hpp` | `data_batch`, `read_only_data_batch`, `mutable_data_batch`, `batch_state` |
-| `include/cucascade/data/data_repository.hpp` | `idata_repository<PtrType>`, `shared_data_repository`, `unique_data_repository` |
+| `include/cucascade/data/data_repository.hpp` | `data_repository` |
 | `include/cucascade/data/data_repository_manager.hpp` | `data_repository_manager`, `operator_port_key` |
 | `include/cucascade/data/representation_converter.hpp` | `representation_converter_registry`, `converter_key` |
 | `include/cucascade/data/gpu_data_representation.hpp` | `gpu_table_representation` wrapping `cudf::table` |

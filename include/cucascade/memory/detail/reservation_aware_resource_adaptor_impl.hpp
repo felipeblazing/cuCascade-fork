@@ -191,17 +191,18 @@ class reservation_aware_resource_adaptor_impl {
   // CCCL resource concept methods
   //===----------------------------------------------------------------------===//
 
-  void* allocate(cuda::stream_ref stream, std::size_t bytes, std::size_t alignment);
+  void* allocate(::cuda::stream_ref stream, std::size_t bytes, std::size_t alignment);
 
-  void deallocate(cuda::stream_ref stream,
+  void deallocate(::cuda::stream_ref stream,
                   void* ptr,
                   std::size_t bytes,
                   std::size_t alignment) noexcept;
 
   void* allocate_sync(std::size_t bytes, std::size_t alignment = alignof(std::max_align_t))
   {
-    auto* ptr = allocate(cuda::stream_ref{cudaStream_t{nullptr}}, bytes, alignment);
-    CUCASCADE_CUDA_TRY(cudaStreamSynchronize(cudaStream_t{nullptr}));
+    auto def_stream = cuda::stream_ref{cudaStream_t{nullptr}};
+    auto* ptr       = allocate(def_stream, bytes, alignment);
+    def_stream.sync();
     return ptr;
   }
 
@@ -209,14 +210,15 @@ class reservation_aware_resource_adaptor_impl {
                        std::size_t bytes,
                        std::size_t alignment = alignof(std::max_align_t)) noexcept
   {
-    deallocate(cuda::stream_ref{cudaStream_t{nullptr}}, ptr, bytes, alignment);
-    CUCASCADE_ASSERT_CUDA_SUCCESS(cudaStreamSynchronize(cudaStream_t{nullptr}));
+    auto def_stream = cuda::stream_ref{cudaStream_t{nullptr}};
+    deallocate(def_stream, ptr, bytes, alignment);
+    def_stream.sync();
   }
 
   bool operator==(reservation_aware_resource_adaptor_impl const& other) const noexcept;
 
   friend void get_property(reservation_aware_resource_adaptor_impl const&,
-                           cuda::mr::device_accessible) noexcept
+                           ::cuda::mr::device_accessible) noexcept
   {
   }
 

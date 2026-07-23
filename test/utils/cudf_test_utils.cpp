@@ -221,6 +221,16 @@ static bool columns_equal_recursive(const cudf::column_view& left,
   // LIST: compare offsets (normalized) + recurse into values child
   if (type_id == cudf::type_id::LIST) {
     if (left.num_children() >= 2 && left.size() > 0) {
+      // LIST offsets must stay INT32 (cudf::size_type) across a round trip — list algorithms
+      // read the offsets child as size_type, so an INT64 offsets child is malformed. (STRING
+      // offsets are intentionally tolerant of INT32/INT64 above.)
+      if (left.child(0).type().id() != right.child(0).type().id()) {
+        std::cout << "[cudf-equal] " << path << " LIST offsets type mismatch: left="
+                  << static_cast<int>(left.child(0).type().id())
+                  << " right=" << static_cast<int>(right.child(0).type().id()) << std::endl
+                  << std::flush;
+        return false;
+      }
       auto left_offsets  = read_offsets_to_host(left.child(0));
       auto right_offsets = read_offsets_to_host(right.child(0));
       if (left_offsets != right_offsets) {
@@ -387,19 +397,10 @@ class logging_device_resource {
 static void install_rmm_logging_resource_once()
 {
   static bool installed = false;
-#if !(RMM_VERSION_MAJOR > 26 || (RMM_VERSION_MAJOR == 26 && RMM_VERSION_MINOR >= 6))
-  static std::optional<cuda::mr::any_resource<cuda::mr::device_accessible>> logging_resource;
-#endif
   if (!installed) {
     auto prev = rmm::mr::get_current_device_resource_ref();
-#if RMM_VERSION_MAJOR > 26 || (RMM_VERSION_MAJOR == 26 && RMM_VERSION_MINOR >= 6)
     rmm::mr::set_current_device_resource(
       cuda::mr::any_resource<cuda::mr::device_accessible>{logging_device_resource{prev}});
-#else
-    logging_resource =
-      cuda::mr::any_resource<cuda::mr::device_accessible>{logging_device_resource{prev}};
-    rmm::mr::set_current_device_resource_ref(*logging_resource);
-#endif
     installed = true;
     std::cout << "[rmm-log ] installed logging device resource adaptor" << std::endl << std::flush;
   }

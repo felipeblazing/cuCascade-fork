@@ -139,6 +139,8 @@ class fixed_size_host_memory_resource : public chunked_resource_info {
 
     std::size_t size() const noexcept { return _blocks.size(); }
 
+    [[nodiscard]] std::vector<std::byte*> release_blocks() noexcept { return std::move(_blocks); }
+
     std::span<std::byte*> get_blocks() noexcept { return _blocks; }
 
     std::span<std::byte> operator[](std::size_t i) const
@@ -329,19 +331,19 @@ class fixed_size_host_memory_resource : public chunked_resource_info {
    */
   std::size_t get_peak_total_allocated_bytes() const;
 
-  void* allocate(cuda::stream_ref stream,
+  void* allocate(::cuda::stream_ref stream,
                  std::size_t bytes,
                  std::size_t alignment = alignof(std::max_align_t));
 
-  void deallocate(cuda::stream_ref stream,
+  void deallocate(::cuda::stream_ref stream,
                   void* ptr,
                   std::size_t bytes,
                   std::size_t alignment = alignof(std::max_align_t)) noexcept;
 
   void* allocate_sync(std::size_t bytes, std::size_t alignment = alignof(std::max_align_t))
   {
-    auto* ptr = allocate(cuda::stream_ref{cudaStream_t{nullptr}}, bytes, alignment);
-    CUCASCADE_CUDA_TRY(cudaStreamSynchronize(cudaStream_t{nullptr}));
+    auto* ptr = allocate(::cuda::stream_ref{cudaStream_t{nullptr}}, bytes, alignment);
+    rmm::cuda_stream_default.synchronize();
     return ptr;
   }
 
@@ -349,14 +351,14 @@ class fixed_size_host_memory_resource : public chunked_resource_info {
                        std::size_t bytes,
                        std::size_t alignment = alignof(std::max_align_t)) noexcept
   {
-    deallocate(cuda::stream_ref{cudaStream_t{nullptr}}, ptr, bytes, alignment);
-    CUCASCADE_ASSERT_CUDA_SUCCESS(cudaStreamSynchronize(cudaStream_t{nullptr}));
+    deallocate(::cuda::stream_ref{cudaStream_t{nullptr}}, ptr, bytes, alignment);
+    rmm::cuda_stream_default.synchronize_no_throw();
   }
 
   [[nodiscard]] bool operator==(fixed_size_host_memory_resource const& other) const noexcept;
 
   friend void get_property(fixed_size_host_memory_resource const&,
-                           cuda::mr::device_accessible) noexcept
+                           ::cuda::mr::device_accessible) noexcept
   {
   }
 

@@ -18,8 +18,9 @@
 #include "utils/cudf_test_utils.hpp"
 #include "utils/mock_test_utils.hpp"
 
+#include <cucascade/cuda/event.hpp>
+#include <cucascade/cudf/gpu_data_representation.hpp>
 #include <cucascade/data/data_batch.hpp>
-#include <cucascade/data/gpu_data_representation.hpp>
 
 #include <rmm/cuda_stream.hpp>
 #include <rmm/device_buffer.hpp>
@@ -38,6 +39,7 @@
 #include <string>
 #include <thread>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 using namespace cucascade;
@@ -50,22 +52,19 @@ using cucascade::test::mock_data_representation;
 // Construction tests (TEST-01)
 // =============================================================================
 
-TEST_CASE("data_batch construction via shared_ptr", "[data_batch]")
+TEST_CASE("data_batch construction via factory", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 2048);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   REQUIRE(batch->get_batch_id() == 1);
   REQUIRE(batch->get_subscriber_count() == 0);
 }
 
-TEST_CASE("data_batch construction via unique_ptr", "[data_batch]")
+TEST_CASE("data_batch factory rejects null data", "[data_batch]")
 {
-  auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 2048);
-  auto batch = std::make_unique<data_batch>(1, std::move(data));
-
-  REQUIRE(batch->get_batch_id() == 1);
-  REQUIRE(batch->get_subscriber_count() == 0);
+  REQUIRE_THROWS_WITH(data_batch::make(1, std::unique_ptr<idata_representation>{}),
+                      "data is null in data_batch factory");
 }
 
 // =============================================================================
@@ -78,6 +77,10 @@ TEST_CASE("data_batch is non-copyable and non-movable", "[data_batch]")
   static_assert(!std::is_move_constructible_v<data_batch>);
   static_assert(!std::is_copy_assignable_v<data_batch>);
   static_assert(!std::is_move_assignable_v<data_batch>);
+  static_assert(
+    !std::is_constructible_v<data_batch, uint64_t, std::unique_ptr<idata_representation>>);
+  static_assert(std::is_same_v<decltype(std::declval<const read_only_data_batch&>().get_data()),
+                               const idata_representation*>);
 }
 
 // =============================================================================
@@ -87,14 +90,14 @@ TEST_CASE("data_batch is non-copyable and non-movable", "[data_batch]")
 TEST_CASE("data_batch get_batch_id is lock-free via shared_ptr", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(99, std::move(data));
+  auto batch = data_batch::make(99, std::move(data));
 
   // get_batch_id works without acquiring any lock
   REQUIRE(batch->get_batch_id() == 99);
 
   // Also works through the mutable accessor
   auto data2  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch2 = std::make_shared<data_batch>(99, std::move(data2));
+  auto batch2 = data_batch::make(99, std::move(data2));
   auto rw     = batch2->to_mutable();
   REQUIRE(rw.get_batch_id() == 99);
 }
@@ -106,7 +109,7 @@ TEST_CASE("data_batch get_batch_id is lock-free via shared_ptr", "[data_batch]")
 TEST_CASE("data_batch to_read_only acquires shared access", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   auto ro = batch->to_read_only();
   REQUIRE(ro.get_batch_id() == 1);
@@ -116,7 +119,7 @@ TEST_CASE("data_batch to_read_only acquires shared access", "[data_batch]")
 TEST_CASE("data_batch multiple concurrent read_only via shared_ptr copies", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   auto ro1 = batch->to_read_only();
   auto ro2 = batch->to_read_only();
@@ -134,7 +137,7 @@ TEST_CASE("data_batch multiple concurrent read_only via shared_ptr copies", "[da
 TEST_CASE("data_batch try_to_read_only succeeds when unlocked", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   auto result = batch->try_to_read_only();
   REQUIRE(result.has_value());
@@ -144,7 +147,7 @@ TEST_CASE("data_batch try_to_read_only succeeds when unlocked", "[data_batch]")
 TEST_CASE("data_batch try_to_read_only fails when mutable lock held", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   auto rw = batch->to_mutable();
 
@@ -160,7 +163,7 @@ TEST_CASE("data_batch try_to_read_only fails when mutable lock held", "[data_bat
 TEST_CASE("data_batch try_to_mutable succeeds when unlocked", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   auto result = batch->try_to_mutable();
   REQUIRE(result.has_value());
@@ -170,7 +173,7 @@ TEST_CASE("data_batch try_to_mutable succeeds when unlocked", "[data_batch]")
 TEST_CASE("data_batch try_to_mutable fails when readonly lock held", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   auto ro = batch->to_read_only();
 
@@ -186,7 +189,7 @@ TEST_CASE("data_batch try_to_mutable fails when readonly lock held", "[data_batc
 TEST_CASE("data_batch try_to_mutable fails when mutable lock held", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   auto rw = batch->to_mutable();
 
@@ -206,7 +209,7 @@ TEST_CASE("data_batch try_to_mutable fails when mutable lock held", "[data_batch
 TEST_CASE("data_batch to_mutable acquires exclusive access", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   auto rw = batch->to_mutable();
   REQUIRE(rw.get_batch_id() == 1);
@@ -215,7 +218,7 @@ TEST_CASE("data_batch to_mutable acquires exclusive access", "[data_batch]")
 TEST_CASE("data_batch mutable blocks until readonly released", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   // Acquire read-only on a heap-allocated accessor so we can control its lifetime
   auto ro = std::make_unique<read_only_data_batch>(batch->to_read_only());
@@ -242,7 +245,7 @@ TEST_CASE("data_batch mutable blocks until readonly released", "[data_batch]")
 TEST_CASE("data_batch mutable to readonly through idle", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   auto rw   = batch->to_mutable();
   auto idle = data_batch::to_idle(std::move(rw));
@@ -253,7 +256,7 @@ TEST_CASE("data_batch mutable to readonly through idle", "[data_batch]")
 TEST_CASE("data_batch readonly to mutable through idle", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   auto ro   = batch->to_read_only();
   auto idle = data_batch::to_idle(std::move(ro));
@@ -267,7 +270,7 @@ TEST_CASE("data_batch readonly to mutable through idle", "[data_batch]")
 
 TEST_CASE("data_batch destruction order safety", "[data_batch]")
 {
-  // Verifies member declaration order in read_only_data_batch: PtrType (_batch)
+  // Verifies member declaration order in read_only_data_batch: shared_ptr (_batch)
   // is declared before the lock guard (_lock). When the accessor is destroyed,
   // C++ destroys members in reverse declaration order:
   //   1. _lock (shared_lock) releases the shared lock on the mutex
@@ -275,7 +278,7 @@ TEST_CASE("data_batch destruction order safety", "[data_batch]")
   // If the order were reversed, the mutex would be destroyed before the lock
   // releases, causing undefined behavior detectable by TSan/ASan.
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   // Create accessor -- this is now the ONLY shared_ptr holding the batch alive.
   auto ro = batch->to_read_only();
@@ -292,7 +295,7 @@ TEST_CASE("data_batch destruction order safety", "[data_batch]")
 TEST_CASE("data_batch subscribe always succeeds", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   REQUIRE(batch->get_subscriber_count() == 0);
   batch->subscribe();
@@ -304,7 +307,7 @@ TEST_CASE("data_batch subscribe always succeeds", "[data_batch]")
 TEST_CASE("data_batch unsubscribe decrements count", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   batch->subscribe();
   batch->subscribe();
@@ -319,7 +322,7 @@ TEST_CASE("data_batch unsubscribe decrements count", "[data_batch]")
 TEST_CASE("data_batch unsubscribe throws at zero", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   REQUIRE_THROWS_AS(batch->unsubscribe(), std::runtime_error);
   REQUIRE(batch->get_subscriber_count() == 0);
@@ -328,7 +331,7 @@ TEST_CASE("data_batch unsubscribe throws at zero", "[data_batch]")
 TEST_CASE("data_batch subscriber count thread safety", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   constexpr int num_threads     = 10;
   constexpr int subs_per_thread = 100;
@@ -370,7 +373,7 @@ TEST_CASE("data_batch subscriber count thread safety", "[data_batch]")
 TEST_CASE("data_batch set_data via mutable accessor", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   auto rw = batch->to_mutable();
   REQUIRE(rw.get_current_tier() == memory::Tier::GPU);
@@ -389,19 +392,19 @@ TEST_CASE("data_batch accessor get_current_tier", "[data_batch]")
 {
   {
     auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-    auto batch = std::make_shared<data_batch>(1, std::move(data));
+    auto batch = data_batch::make(1, std::move(data));
     auto ro    = batch->to_read_only();
     REQUIRE(ro.get_current_tier() == memory::Tier::GPU);
   }
   {
     auto data  = std::make_unique<mock_data_representation>(memory::Tier::HOST, 1024);
-    auto batch = std::make_shared<data_batch>(2, std::move(data));
+    auto batch = data_batch::make(2, std::move(data));
     auto ro    = batch->to_read_only();
     REQUIRE(ro.get_current_tier() == memory::Tier::HOST);
   }
   {
     auto data  = std::make_unique<mock_data_representation>(memory::Tier::DISK, 1024);
-    auto batch = std::make_shared<data_batch>(3, std::move(data));
+    auto batch = data_batch::make(3, std::move(data));
     auto ro    = batch->to_read_only();
     REQUIRE(ro.get_current_tier() == memory::Tier::DISK);
   }
@@ -417,7 +420,7 @@ TEST_CASE("data_batch unique IDs", "[data_batch]")
 
   for (auto id : batch_ids) {
     auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-    auto batch = std::make_shared<data_batch>(id, std::move(data));
+    auto batch = data_batch::make(id, std::move(data));
     REQUIRE(batch->get_batch_id() == id);
   }
 }
@@ -429,7 +432,7 @@ TEST_CASE("data_batch unique IDs", "[data_batch]")
 TEST_CASE("data_batch thread-safe concurrent readonly", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   constexpr int num_threads      = 10;
   constexpr int reads_per_thread = 100;
@@ -452,7 +455,7 @@ TEST_CASE("data_batch thread-safe concurrent readonly", "[data_batch]")
 TEST_CASE("data_batch thread-safe mutable access serialized", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   constexpr int num_threads = 10;
   std::atomic<int> concurrent_writers{0};
@@ -485,7 +488,7 @@ TEST_CASE("data_batch thread-safe mutable access serialized", "[data_batch]")
 TEST_CASE("data_batch clone creates independent copy", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 2048);
-  auto batch = std::make_shared<data_batch>(42, std::move(data));
+  auto batch = data_batch::make(42, std::move(data));
 
   auto ro     = batch->to_read_only();
   auto cloned = ro.clone(100, rmm::cuda_stream_view{});
@@ -503,7 +506,7 @@ TEST_CASE("data_batch clone creates independent copy", "[data_batch]")
 TEST_CASE("data_batch clone with different batch IDs", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::HOST, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   auto ro = batch->to_read_only();
 
@@ -522,7 +525,7 @@ TEST_CASE("data_batch clone preserves tier information", "[data_batch]")
   SECTION("GPU tier")
   {
     auto data   = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-    auto batch  = std::make_shared<data_batch>(1, std::move(data));
+    auto batch  = data_batch::make(1, std::move(data));
     auto ro     = batch->to_read_only();
     auto cloned = ro.clone(2, rmm::cuda_stream_view{});
     auto ro_cl  = cloned->to_read_only();
@@ -531,7 +534,7 @@ TEST_CASE("data_batch clone preserves tier information", "[data_batch]")
   SECTION("HOST tier")
   {
     auto data   = std::make_unique<mock_data_representation>(memory::Tier::HOST, 1024);
-    auto batch  = std::make_shared<data_batch>(1, std::move(data));
+    auto batch  = data_batch::make(1, std::move(data));
     auto ro     = batch->to_read_only();
     auto cloned = ro.clone(2, rmm::cuda_stream_view{});
     auto ro_cl  = cloned->to_read_only();
@@ -540,7 +543,7 @@ TEST_CASE("data_batch clone preserves tier information", "[data_batch]")
   SECTION("DISK tier")
   {
     auto data   = std::make_unique<mock_data_representation>(memory::Tier::DISK, 1024);
-    auto batch  = std::make_shared<data_batch>(1, std::move(data));
+    auto batch  = data_batch::make(1, std::move(data));
     auto ro     = batch->to_read_only();
     auto cloned = ro.clone(2, rmm::cuda_stream_view{});
     auto ro_cl  = cloned->to_read_only();
@@ -563,7 +566,7 @@ TEST_CASE("data_batch clone with real GPU data verifies data integrity", "[data_
 
   auto gpu_repr = std::make_unique<gpu_table_representation>(
     std::make_unique<cudf::table>(std::move(table)), *gpu_space, rmm::cuda_stream_view{});
-  auto batch = std::make_shared<data_batch>(1, std::move(gpu_repr));
+  auto batch = data_batch::make(1, std::move(gpu_repr));
 
   auto ro     = batch->to_read_only();
   auto cloned = ro.clone(2, stream.view());
@@ -572,8 +575,8 @@ TEST_CASE("data_batch clone with real GPU data verifies data integrity", "[data_
 
   auto ro_clone = cloned->to_read_only();
 
-  auto* original_repr = dynamic_cast<gpu_table_representation*>(ro.get_data());
-  auto* cloned_repr   = dynamic_cast<gpu_table_representation*>(ro_clone.get_data());
+  auto* original_repr = dynamic_cast<const gpu_table_representation*>(ro.get_data());
+  auto* cloned_repr   = dynamic_cast<const gpu_table_representation*>(ro_clone.get_data());
   REQUIRE(original_repr != nullptr);
   REQUIRE(cloned_repr != nullptr);
 
@@ -594,15 +597,15 @@ TEST_CASE("data_batch clone creates independent memory copies", "[data_batch][gp
   auto table = create_simple_cudf_table(50, 2, gpu_space->get_default_allocator(), stream.view());
   auto gpu_repr = std::make_unique<gpu_table_representation>(
     std::make_unique<cudf::table>(std::move(table)), *gpu_space, rmm::cuda_stream_view{});
-  auto batch = std::make_shared<data_batch>(1, std::move(gpu_repr));
+  auto batch = data_batch::make(1, std::move(gpu_repr));
 
   auto ro     = batch->to_read_only();
   auto cloned = ro.clone(2, stream.view());
 
   auto ro_clone = cloned->to_read_only();
 
-  auto* original_repr = dynamic_cast<gpu_table_representation*>(ro.get_data());
-  auto* cloned_repr   = dynamic_cast<gpu_table_representation*>(ro_clone.get_data());
+  auto* original_repr = dynamic_cast<const gpu_table_representation*>(ro.get_data());
+  auto* cloned_repr   = dynamic_cast<const gpu_table_representation*>(ro_clone.get_data());
 
   // Verify each column points to different memory
   for (cudf::size_type i = 0; i < original_repr->get_table_view().num_columns(); ++i) {
@@ -619,7 +622,7 @@ TEST_CASE("data_batch multiple clones are all independent", "[data_batch][gpu]")
   auto table = create_simple_cudf_table(30, 2, gpu_space->get_default_allocator(), stream.view());
   auto gpu_repr = std::make_unique<gpu_table_representation>(
     std::make_unique<cudf::table>(std::move(table)), *gpu_space, rmm::cuda_stream_view{});
-  auto batch = std::make_shared<data_batch>(1, std::move(gpu_repr));
+  auto batch = data_batch::make(1, std::move(gpu_repr));
 
   // Clone 3 times from the same read_only accessor (clone does not consume the accessor)
   auto ro     = batch->to_read_only();
@@ -635,10 +638,10 @@ TEST_CASE("data_batch multiple clones are all independent", "[data_batch][gpu]")
   auto ro_c2 = clone2->to_read_only();
   auto ro_c3 = clone3->to_read_only();
 
-  auto* original_repr = dynamic_cast<gpu_table_representation*>(ro.get_data());
-  auto* clone1_repr   = dynamic_cast<gpu_table_representation*>(ro_c1.get_data());
-  auto* clone2_repr   = dynamic_cast<gpu_table_representation*>(ro_c2.get_data());
-  auto* clone3_repr   = dynamic_cast<gpu_table_representation*>(ro_c3.get_data());
+  auto* original_repr = dynamic_cast<const gpu_table_representation*>(ro.get_data());
+  auto* clone1_repr   = dynamic_cast<const gpu_table_representation*>(ro_c1.get_data());
+  auto* clone2_repr   = dynamic_cast<const gpu_table_representation*>(ro_c2.get_data());
+  auto* clone3_repr   = dynamic_cast<const gpu_table_representation*>(ro_c3.get_data());
 
   stream.synchronize();
   expect_cudf_tables_equal_on_stream(
@@ -657,14 +660,14 @@ TEST_CASE("data_batch clone with empty table", "[data_batch][gpu]")
   auto table    = create_simple_cudf_table(0, 2, gpu_space->get_default_allocator(), stream.view());
   auto gpu_repr = std::make_unique<gpu_table_representation>(
     std::make_unique<cudf::table>(std::move(table)), *gpu_space, rmm::cuda_stream_view{});
-  auto batch = std::make_shared<data_batch>(1, std::move(gpu_repr));
+  auto batch = data_batch::make(1, std::move(gpu_repr));
 
   auto ro     = batch->to_read_only();
   auto cloned = ro.clone(2, stream.view());
   REQUIRE(cloned != nullptr);
 
   auto ro_clone     = cloned->to_read_only();
-  auto* cloned_repr = dynamic_cast<gpu_table_representation*>(ro_clone.get_data());
+  auto* cloned_repr = dynamic_cast<const gpu_table_representation*>(ro_clone.get_data());
   REQUIRE(cloned_repr != nullptr);
   REQUIRE(cloned_repr->get_table_view().num_rows() == 0);
   REQUIRE(cloned_repr->get_table_view().num_columns() == 2);
@@ -679,7 +682,7 @@ TEST_CASE("data_batch clone with large table", "[data_batch][gpu]")
     create_simple_cudf_table(10000, 2, gpu_space->get_default_allocator(), stream.view());
   auto gpu_repr = std::make_unique<gpu_table_representation>(
     std::make_unique<cudf::table>(std::move(table)), *gpu_space, rmm::cuda_stream_view{});
-  auto batch = std::make_shared<data_batch>(1, std::move(gpu_repr));
+  auto batch = data_batch::make(1, std::move(gpu_repr));
 
   auto ro     = batch->to_read_only();
   auto cloned = ro.clone(2, stream.view());
@@ -687,8 +690,8 @@ TEST_CASE("data_batch clone with large table", "[data_batch][gpu]")
 
   auto ro_clone = cloned->to_read_only();
 
-  auto* original_repr = dynamic_cast<gpu_table_representation*>(ro.get_data());
-  auto* cloned_repr   = dynamic_cast<gpu_table_representation*>(ro_clone.get_data());
+  auto* original_repr = dynamic_cast<const gpu_table_representation*>(ro.get_data());
+  auto* cloned_repr   = dynamic_cast<const gpu_table_representation*>(ro_clone.get_data());
 
   // Verify structure
   REQUIRE(cloned_repr->get_table_view().num_rows() == 10000);
@@ -711,14 +714,14 @@ TEST_CASE("data_batch clone with large table", "[data_batch][gpu]")
 TEST_CASE("data_batch initial state is idle", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
   REQUIRE(batch->get_state() == batch_state::idle);
 }
 
 TEST_CASE("data_batch state transitions", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   SECTION("idle -> read_only -> idle")
   {
@@ -760,7 +763,7 @@ TEST_CASE("data_batch state transitions", "[data_batch]")
 TEST_CASE("data_batch non-static to_read_only does not consume caller pointer", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   auto accessor = batch->to_read_only();
   REQUIRE(batch != nullptr);
@@ -772,7 +775,7 @@ TEST_CASE("data_batch non-static to_read_only does not consume caller pointer", 
 TEST_CASE("data_batch non-static to_mutable does not consume caller pointer", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   auto accessor = batch->to_mutable();
   REQUIRE(batch != nullptr);
@@ -784,7 +787,7 @@ TEST_CASE("data_batch non-static to_mutable does not consume caller pointer", "[
 TEST_CASE("data_batch non-static try_to_read_only", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   auto result = batch->try_to_read_only();
   REQUIRE(result.has_value());
@@ -795,7 +798,7 @@ TEST_CASE("data_batch non-static try_to_read_only", "[data_batch]")
 TEST_CASE("data_batch non-static try_to_mutable", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   auto result = batch->try_to_mutable();
   REQUIRE(result.has_value());
@@ -806,7 +809,7 @@ TEST_CASE("data_batch non-static try_to_mutable", "[data_batch]")
 TEST_CASE("data_batch non-static try_to_mutable fails when read-locked", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   auto ro     = batch->to_read_only();
   auto result = batch->try_to_mutable();
@@ -820,15 +823,10 @@ TEST_CASE("data_batch non-static try_to_mutable fails when read-locked", "[data_
 // Tracks whether a CUDA event recorded after async work was complete at the
 // time the source representation was destroyed.
 struct conversion_sync_observer {
-  cudaEvent_t event{};
+  cucascade::cuda::cuda_event event;
   bool synced_before_destroy = false;
 
-  conversion_sync_observer()
-  {
-    CUCASCADE_CUDA_TRY(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
-  }
-  ~conversion_sync_observer() { cudaEventDestroy(event); }
-
+  conversion_sync_observer()                                           = default;
   conversion_sync_observer(const conversion_sync_observer&)            = delete;
   conversion_sync_observer& operator=(const conversion_sync_observer&) = delete;
 };
@@ -849,7 +847,8 @@ class observed_gpu_representation : private cucascade::test::mock_memory_space_h
 
   ~observed_gpu_representation() override
   {
-    _observer.synced_before_destroy = (cudaEventQuery(_observer.event) == cudaSuccess);
+    _observer.synced_before_destroy =
+      (_observer.event.query() == cucascade::cuda::event::query_result::success);
   }
 
   void const* data() const { return _buf.data(); }
@@ -891,18 +890,19 @@ TEST_CASE("convert_to synchronizes stream before destroying GPU source", "[data_
   registry.register_converter<observed_gpu_representation, mock_data_representation>(
     [&](idata_representation& source,
         const memory::memory_space* /*target_space*/,
-        rmm::cuda_stream_view s) -> std::unique_ptr<idata_representation> {
+        rmm::cuda_stream_view s,
+        memory::reservation* /*reservation*/) -> std::unique_ptr<idata_representation> {
       auto& gpu_src = source.cast<observed_gpu_representation>();
       CUCASCADE_CUDA_TRY(
         cudaMemcpyAsync(pinned_host, gpu_src.data(), buf_size, cudaMemcpyDeviceToHost, s.value()));
       // Record event after the async copy so we can check completion order
-      CUCASCADE_CUDA_TRY(cudaEventRecord(observer.event, s.value()));
+      observer.event.record(s);
       // Deliberately NO stream.synchronize() — convert_to must handle this
       return std::make_unique<mock_data_representation>(memory::Tier::HOST, buf_size);
     });
 
   auto gpu_data = std::make_unique<observed_gpu_representation>(std::move(gpu_buf), observer);
-  auto batch    = std::make_shared<data_batch>(1, std::move(gpu_data));
+  auto batch    = data_batch::make(1, std::move(gpu_data));
   {
     auto mut = batch->to_mutable();
     mut.convert_to<mock_data_representation>(registry, host_space.get(), stream.view());
@@ -947,7 +947,8 @@ class observed_host_representation : private cucascade::test::mock_memory_space_
 
   ~observed_host_representation() override
   {
-    _observer.synced_before_destroy = (cudaEventQuery(_observer.event) == cudaSuccess);
+    _observer.synced_before_destroy =
+      (_observer.event.query() == cucascade::cuda::event::query_result::success);
   }
 
   void const* data() const { return _pinned_ptr; }
@@ -986,20 +987,21 @@ TEST_CASE("convert_to synchronizes stream before destroying HOST source when tar
   registry.register_converter<observed_host_representation, mock_data_representation>(
     [&](idata_representation& source,
         const memory::memory_space* /*target_space*/,
-        rmm::cuda_stream_view s) -> std::unique_ptr<idata_representation> {
+        rmm::cuda_stream_view s,
+        memory::reservation* /*reservation*/) -> std::unique_ptr<idata_representation> {
       auto& host_src = source.cast<observed_host_representation>();
       rmm::device_buffer gpu_buf(buf_size, s);
       CUCASCADE_CUDA_TRY(cudaMemcpyAsync(
         gpu_buf.data(), host_src.data(), buf_size, cudaMemcpyHostToDevice, s.value()));
       // Record event after the async copy so we can check completion order
-      CUCASCADE_CUDA_TRY(cudaEventRecord(observer.event, s.value()));
+      observer.event.record(s);
       // Deliberately NO stream.synchronize() — convert_to must handle this
       return std::make_unique<mock_data_representation>(memory::Tier::GPU, buf_size);
     });
 
   auto host_data = std::make_unique<observed_host_representation>(pinned_host, buf_size, observer);
   auto gpu_space = make_mock_memory_space(memory::Tier::GPU, 0);
-  auto batch     = std::make_shared<data_batch>(1, std::move(host_data));
+  auto batch     = data_batch::make(1, std::move(host_data));
   {
     auto mut = batch->to_mutable();
     mut.convert_to<mock_data_representation>(registry, gpu_space.get(), stream.view());
@@ -1044,7 +1046,8 @@ TEST_CASE("mutable_data_batch holds exclusive lock during convert_to stream sync
   registry.register_converter<observed_gpu_representation, mock_data_representation>(
     [&](idata_representation& source,
         const memory::memory_space* /*target_space*/,
-        rmm::cuda_stream_view s) -> std::unique_ptr<idata_representation> {
+        rmm::cuda_stream_view s,
+        memory::reservation* /*reservation*/) -> std::unique_ptr<idata_representation> {
       auto& gpu_src = source.cast<observed_gpu_representation>();
       CUCASCADE_CUDA_TRY(
         cudaMemcpyAsync(pinned_host, gpu_src.data(), buf_size, cudaMemcpyDeviceToHost, s.value()));
@@ -1053,13 +1056,13 @@ TEST_CASE("mutable_data_batch holds exclusive lock during convert_to stream sync
       CUCASCADE_CUDA_TRY(cudaLaunchHostFunc(s.value(), stream_delay_callback, nullptr));
       // Record event AFTER the delay — it won't be complete until the
       // callback finishes, regardless of GPU speed.
-      CUCASCADE_CUDA_TRY(cudaEventRecord(observer.event, s.value()));
+      observer.event.record(s);
       converter_returned.store(true, std::memory_order_release);
       return std::make_unique<mock_data_representation>(memory::Tier::HOST, buf_size);
     });
 
   auto gpu_data = std::make_unique<observed_gpu_representation>(std::move(gpu_buf), observer);
-  auto batch    = std::make_shared<data_batch>(1, std::move(gpu_data));
+  auto batch    = data_batch::make(1, std::move(gpu_data));
 
   std::thread convert_thread([&]() {
     auto mut = batch->to_mutable();
@@ -1083,7 +1086,8 @@ TEST_CASE("mutable_data_batch holds exclusive lock during convert_to stream sync
   // Confirm the stream work was still in progress when we called try_to_mutable.
   // cudaErrorNotReady means the event (recorded after the 50 ms callback) hasn't
   // completed yet, proving we polled DURING the sync window.
-  bool accessed_during_sync = (cudaEventQuery(observer.event) == cudaErrorNotReady);
+  bool accessed_during_sync =
+    (observer.event.query() == cucascade::cuda::event::query_result::in_progress);
 
   convert_thread.join();
 
@@ -1106,7 +1110,7 @@ TEST_CASE("mutable_data_batch holds exclusive lock during convert_to stream sync
 TEST_CASE("data_batch readonly_to_mutable", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   auto ro  = batch->to_read_only();
   auto mut = data_batch::readonly_to_mutable(std::move(ro));
@@ -1119,7 +1123,7 @@ TEST_CASE("data_batch readonly_to_mutable", "[data_batch]")
 TEST_CASE("data_batch mutable_to_readonly", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   auto mut = batch->to_mutable();
   auto ro  = data_batch::mutable_to_readonly(std::move(mut));
@@ -1132,7 +1136,7 @@ TEST_CASE("data_batch mutable_to_readonly", "[data_batch]")
 TEST_CASE("data_batch full cycle: idle -> ro -> mutable -> ro -> idle", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   auto ro1  = batch->to_read_only();
   auto mut  = data_batch::readonly_to_mutable(std::move(ro1));
@@ -1150,7 +1154,7 @@ TEST_CASE("data_batch full cycle: idle -> ro -> mutable -> ro -> idle", "[data_b
 TEST_CASE("data_batch read_only_count tracks concurrent readers", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   REQUIRE(batch->get_read_only_count() == 0);
 
@@ -1188,7 +1192,7 @@ TEST_CASE("data_batch read_only_count tracks concurrent readers", "[data_batch]"
 TEST_CASE("data_batch destructor transitions state to idle for read_only", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   {
     auto ro = batch->to_read_only();
@@ -1201,7 +1205,7 @@ TEST_CASE("data_batch destructor transitions state to idle for read_only", "[dat
 TEST_CASE("data_batch destructor transitions state to idle for mutable", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   {
     auto mut = batch->to_mutable();
@@ -1214,7 +1218,7 @@ TEST_CASE("data_batch destructor transitions state to idle for mutable", "[data_
 TEST_CASE("data_batch concurrent lifecycle: readers then mutable then readers", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   // Track event ordering
   std::vector<std::string> events;
@@ -1333,7 +1337,7 @@ TEST_CASE("data_batch concurrent lifecycle: readers then mutable then readers", 
 TEST_CASE("data_batch move does not change read_only_count", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   auto ro1 = batch->to_read_only();
   REQUIRE(batch->get_read_only_count() == 1);
@@ -1359,7 +1363,7 @@ TEST_CASE("read_only_data_batch is copyable", "[data_batch]")
 TEST_CASE("read_only_data_batch copy constructor acquires new shared lock", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   auto ro1 = batch->to_read_only();
   REQUIRE(batch->get_read_only_count() == 1);
@@ -1376,7 +1380,7 @@ TEST_CASE("read_only_data_batch copy constructor acquires new shared lock", "[da
 TEST_CASE("read_only_data_batch copy destructor decrements count", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   auto ro1 = batch->to_read_only();
   REQUIRE(batch->get_read_only_count() == 1);
@@ -1392,7 +1396,7 @@ TEST_CASE("read_only_data_batch copy destructor decrements count", "[data_batch]
 TEST_CASE("read_only_data_batch copy outlives original", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   std::optional<read_only_data_batch> copy;
   {
@@ -1413,7 +1417,7 @@ TEST_CASE("read_only_data_batch copy outlives original", "[data_batch]")
 TEST_CASE("read_only_data_batch multiple copies all independent", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   auto ro1 = batch->to_read_only();
   auto ro2 = ro1;  // NOLINT(performance-unnecessary-copy-initialization)
@@ -1438,10 +1442,10 @@ TEST_CASE("read_only_data_batch multiple copies all independent", "[data_batch]"
 TEST_CASE("read_only_data_batch copy assignment replaces existing lock", "[data_batch]")
 {
   auto data1  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch1 = std::make_shared<data_batch>(1, std::move(data1));
+  auto batch1 = data_batch::make(1, std::move(data1));
 
   auto data2  = std::make_unique<mock_data_representation>(memory::Tier::HOST, 2048);
-  auto batch2 = std::make_shared<data_batch>(2, std::move(data2));
+  auto batch2 = data_batch::make(2, std::move(data2));
 
   auto ro1 = batch1->to_read_only();
   auto ro2 = batch2->to_read_only();
@@ -1459,7 +1463,7 @@ TEST_CASE("read_only_data_batch copy assignment replaces existing lock", "[data_
 TEST_CASE("read_only_data_batch copy self-assignment is safe", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   auto ro = batch->to_read_only();
   REQUIRE(batch->get_read_only_count() == 1);
@@ -1473,7 +1477,7 @@ TEST_CASE("read_only_data_batch copy self-assignment is safe", "[data_batch]")
 TEST_CASE("read_only_data_batch copy blocks mutable access", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   auto ro   = batch->to_read_only();
   auto copy = ro;  // NOLINT(performance-unnecessary-copy-initialization)
@@ -1497,7 +1501,7 @@ TEST_CASE("read_only_data_batch copy blocks mutable access", "[data_batch]")
 TEST_CASE("read_only_data_batch last copy destruction transitions to idle", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   {
     auto ro1 = batch->to_read_only();
@@ -1513,7 +1517,7 @@ TEST_CASE("read_only_data_batch last copy destruction transitions to idle", "[da
 TEST_CASE("read_only_data_batch concurrent copies thread safety", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   auto ro = batch->to_read_only();
 
@@ -1541,7 +1545,7 @@ TEST_CASE("read_only_data_batch concurrent copies thread safety", "[data_batch]"
 TEST_CASE("read_only_data_batch copy then mutable after all copies released", "[data_batch]")
 {
   auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
-  auto batch = std::make_shared<data_batch>(1, std::move(data));
+  auto batch = data_batch::make(1, std::move(data));
 
   {
     auto ro1 = batch->to_read_only();

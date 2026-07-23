@@ -1,8 +1,13 @@
 [workspace]
 channels = ["conda-forge"]
 name = "cuCascade"
-platforms = ["linux-64", "linux-aarch64"]
-requires-pixi = ">=0.59"
+platforms = [
+    { platform = "linux-64", cuda = "12.9" },
+    { platform = "linux-aarch64", cuda = "12.9" },
+    { platform = "linux-64", cuda = "13" },
+    { platform = "linux-aarch64", cuda = "13" },
+]
+requires-pixi = ">=0.71"
 
 [dependencies]
 cmake = "4.*"
@@ -13,34 +18,48 @@ doxygen = "*"
 fmt = "*"
 jinja2 = "*"
 libcurand-dev = "*"
+libcurl = "*"
+liburing = "*"
 make = "*"
 ninja = "*"
 numactl = "*"
+openssl = "*"
+pkg-config = "*"
 pre-commit = "*"
 python = "*"
 sccache = "*"
 unzip = "*"
+zlib = "*"
 
 # CUDA 13
 [feature.cuda-13]
-system-requirements = { cuda = "13" }
+platforms = ["linux-64-cuda-13", "linux-aarch64-cuda-13"]
 dependencies = { "cuda-version" = "13.2.*" }
 activation = { env = { CUDAARCHS = "75-real;80-real;86-real;90a-real;100f-real;120a-real;120" } }
 
 # CUDA 12
 [feature.cuda-12]
-system-requirements = { cuda = "12.9" }
+platforms = ["linux-64-cuda-12-9", "linux-aarch64-cuda-12-9"]
 dependencies = { "cuda-version" = "12.9.*" }
 activation = { env = { CUDAARCHS = "75-real;80-real;86-real;90a-real;100f-real" } }
 
 # cuDF (nightly channel, default)
 [feature.cudf-nightly]
 channels = [{ channel = "rapidsai-nightly", priority = 1 }]
-dependencies = { "libcudf" = "26.06.*" }
+dependencies = { "libcudf" = "26.08.*" }
 
 [feature.cudf-stable]
 channels = [{ channel = "rapidsai", priority = 1 }]
-dependencies = { "libcudf" = "26.04.*" }
+dependencies = { "libcudf" = "26.06.*" }
+
+# AWS SDK is only needed by the optional S3 parquet benchmark
+# (CUCASCADE_BUILD_S3_BENCHMARK=ON). It is deliberately NOT a dependency of
+# cuCascade itself — use the s3-bench environment to build that benchmark.
+[feature.s3-bench]
+dependencies = { "aws-sdk-cpp" = "*" }
+
+[feature.s3-bench.tasks]
+build-s3-bench = "cmake --preset s3-bench && cmake --build build/s3-bench --target cucascade_s3_parquet_benchmark"
 
 [environments]
 default = ["cuda-13", "cudf-nightly"]
@@ -48,6 +67,7 @@ cuda-13-nightly = ["cuda-13", "cudf-nightly"]
 cuda-12-nightly = ["cuda-12", "cudf-nightly"]
 cuda-13-stable = ["cuda-13", "cudf-stable"]
 cuda-12-stable = ["cuda-12", "cudf-stable"]
+s3-bench = ["cuda-13", "cudf-nightly", "s3-bench"]
 
 [tasks]
 build = "cmake --preset release && cmake --build build/release"

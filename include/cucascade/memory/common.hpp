@@ -31,14 +31,6 @@
 #include <utility>
 #include <vector>
 
-#if RMM_VERSION_MAJOR > 26 || (RMM_VERSION_MAJOR == 26 && RMM_VERSION_MINOR >= 6)
-#define CUCASCADE_RMM_HAS_MOVABLE_ANY_RESOURCE 1
-#else
-#define CUCASCADE_RMM_HAS_MOVABLE_ANY_RESOURCE 0
-#include <rmm/cuda_stream_view.hpp>
-#include <rmm/mr/device_memory_resource.hpp>
-#endif
-
 namespace cucascade {
 namespace memory {
 /**
@@ -74,73 +66,10 @@ class memory_space_id {
 };
 
 using DeviceMemoryResourceFactoryFn =
-  std::function<cuda::mr::any_resource<cuda::mr::device_accessible>(int device_id,
-                                                                    std::size_t capacity)>;
+  std::function<::cuda::mr::any_resource<::cuda::mr::device_accessible>(int device_id,
+                                                                        std::size_t capacity)>;
 
-#if !CUCASCADE_RMM_HAS_MOVABLE_ANY_RESOURCE
-namespace detail {
-
-class legacy_rmm_resource_adapter {
- public:
-  explicit legacy_rmm_resource_adapter(std::shared_ptr<rmm::mr::device_memory_resource> resource)
-    : resource_(std::move(resource))
-  {
-  }
-
-  void* allocate(cuda::stream_ref stream,
-                 std::size_t bytes,
-                 [[maybe_unused]] std::size_t alignment = alignof(std::max_align_t))
-  {
-    return resource_->allocate(rmm::cuda_stream_view{stream}, bytes);
-  }
-
-  void deallocate(cuda::stream_ref stream,
-                  void* ptr,
-                  std::size_t bytes,
-                  [[maybe_unused]] std::size_t alignment = alignof(std::max_align_t)) noexcept
-  {
-    resource_->deallocate(rmm::cuda_stream_view{stream}, ptr, bytes);
-  }
-
-  void* allocate_sync(std::size_t bytes, std::size_t alignment = alignof(std::max_align_t))
-  {
-    auto* ptr = allocate(cuda::stream_ref{cudaStream_t{nullptr}}, bytes, alignment);
-    rmm::cuda_stream_default.synchronize();
-    return ptr;
-  }
-
-  void deallocate_sync(void* ptr,
-                       std::size_t bytes,
-                       std::size_t alignment = alignof(std::max_align_t)) noexcept
-  {
-    deallocate(cuda::stream_ref{cudaStream_t{nullptr}}, ptr, bytes, alignment);
-    rmm::cuda_stream_default.synchronize_no_throw();
-  }
-
-  bool operator==(legacy_rmm_resource_adapter const& other) const noexcept
-  {
-    return resource_.get() == other.resource_.get();
-  }
-
-  friend void get_property(legacy_rmm_resource_adapter const&, cuda::mr::device_accessible) noexcept
-  {
-  }
-
- private:
-  std::shared_ptr<rmm::mr::device_memory_resource> resource_;
-};
-
-}  // namespace detail
-
-inline cuda::mr::any_resource<cuda::mr::device_accessible> wrap_legacy_rmm_resource(
-  std::shared_ptr<rmm::mr::device_memory_resource> resource)
-{
-  return cuda::mr::any_resource<cuda::mr::device_accessible>{
-    detail::legacy_rmm_resource_adapter{std::move(resource)}};
-}
-#endif
-
-cuda::mr::any_resource<cuda::mr::device_accessible> make_default_gpu_memory_resource(
+::cuda::mr::any_resource<::cuda::mr::device_accessible> make_default_gpu_memory_resource(
   int device_id, std::size_t capacity);
 
 /**
@@ -184,9 +113,9 @@ void enable_pool_peer_access_for_all_visible_devices(cudaMemPool_t pool, int own
  * pool access to ProtNone) tells the driver to fall back to its internal pinned
  * host-staging path for `cudaMemcpyPeer*` — slower than real peer DMA but correct.
  *
- * Intended call site: cucascade::register_builtin_converters() — runs once after
- * memory_spaces are constructed and the application has called
- * `cudaDeviceEnablePeerAccess` for each pair. Idempotent.
+ * Intended call site: once after memory_spaces are constructed and the application has
+ * called `cudaDeviceEnablePeerAccess` for each pair (e.g. by the cucascade-cudf layer that
+ * registers tier converters). Idempotent.
  *
  * @param pools_by_device A vector indexed by device id (0..N-1) of the cucascade
  *        pool to also reset access on. Pass an empty vector if cucascade pools
@@ -196,10 +125,10 @@ void enable_pool_peer_access_for_all_visible_devices(cudaMemPool_t pool, int own
  */
 int disable_peer_access_where_broken(std::vector<cudaMemPool_t> const& pools_by_device = {});
 
-cuda::mr::any_resource<cuda::mr::device_accessible, cuda::mr::host_accessible>
+::cuda::mr::any_resource<::cuda::mr::device_accessible, ::cuda::mr::host_accessible>
 make_default_host_memory_resource(int device_id, std::size_t capacity);
 
-cuda::mr::any_resource<cuda::mr::device_accessible, cuda::mr::host_accessible>
+::cuda::mr::any_resource<::cuda::mr::device_accessible, ::cuda::mr::host_accessible>
 make_default_host_memory_resource(int device_id, std::size_t capacity, bool make_portable);
 
 DeviceMemoryResourceFactoryFn make_default_allocator_for_tier(Tier tier);

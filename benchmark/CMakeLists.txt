@@ -15,6 +15,16 @@
 # the License.
 # =============================================================================
 
+# The benchmarks exercise the cudf-backed representation converters, so they
+# require the cucascade-cudf library. Skip them when it is not being built.
+if(NOT CUCASCADE_BUILD_CUDF)
+  message(
+    STATUS
+      "cuCascade benchmarks require CUCASCADE_BUILD_CUDF=ON (cudf-backed converters); skipping"
+  )
+  return()
+endif()
+
 # Fetch Google Benchmark
 include(FetchContent)
 FetchContent_Declare(
@@ -61,7 +71,7 @@ target_compile_options(
 
 # Link dependencies
 target_link_libraries(
-  cucascade_benchmarks PRIVATE cucascade benchmark::benchmark
+  cucascade_benchmarks PRIVATE cucascade_cudf benchmark::benchmark
                                benchmark::benchmark_main CUDA::cudart_static)
 
 # Add custom target to run benchmarks
@@ -71,3 +81,76 @@ add_custom_target(
   DEPENDS cucascade_benchmarks
   WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
   COMMENT "Running cuCascade benchmarks")
+
+# =============================================================================
+# Standalone parquet read benchmark (CLI, not Google Benchmark): cudf's default
+# datasource vs the cucascade-io uring datasource. Requires the io library.
+# =============================================================================
+if(CUCASCADE_BUILD_IO)
+  add_executable(cucascade_parquet_benchmark
+                 ${CMAKE_CURRENT_SOURCE_DIR}/parquet_benchmark.cpp)
+
+  target_compile_options(
+    cucascade_parquet_benchmark
+    PRIVATE
+      $<$<COMPILE_LANGUAGE:CXX>:${CUCASCADE_CXX_WARNING_FLAGS};-Wno-null-dereference>
+      ${CUCASCADE_CUDA_WARNING_FLAGS})
+
+  target_link_libraries(cucascade_parquet_benchmark
+                        PRIVATE cucascade_cudf cucascade_io CUDA::cudart_static)
+
+  # Range-read I/O benchmark: isolates raw column-chunk range reads (io_context
+  # vector-io vs cudf datasource) into host/device, without parquet decode.
+  add_executable(cucascade_parquet_io_benchmark
+                 ${CMAKE_CURRENT_SOURCE_DIR}/parquet_io_benchmark.cpp)
+
+  target_compile_options(
+    cucascade_parquet_io_benchmark
+    PRIVATE
+      $<$<COMPILE_LANGUAGE:CXX>:${CUCASCADE_CXX_WARNING_FLAGS};-Wno-null-dereference>
+      ${CUCASCADE_CUDA_WARNING_FLAGS})
+
+  target_link_libraries(cucascade_parquet_io_benchmark
+                        PRIVATE cucascade_cudf cucascade_io CUDA::cudart_static)
+endif()
+
+# =============================================================================
+# S3 parquet benchmark (CLI): cucascade-io REST datasource (AWS-SDK presigned
+# URLs) vs kvikIO's remote S3 handle. Opt-in via CUCASCADE_BUILD_S3_BENCHMARK so
+# aws-sdk-cpp never becomes a dependency of cuCascade itself (use the `s3-bench`
+# pixi environment, which provides it).
+# =============================================================================
+if(CUCASCADE_BUILD_S3_BENCHMARK)
+  find_package(AWSSDK REQUIRED COMPONENTS s3)
+  find_package(kvikio REQUIRED CONFIG)
+
+  add_executable(cucascade_s3_parquet_benchmark
+                 ${CMAKE_CURRENT_SOURCE_DIR}/s3_parquet_benchmark.cpp)
+
+  target_compile_options(
+    cucascade_s3_parquet_benchmark
+    PRIVATE
+      $<$<COMPILE_LANGUAGE:CXX>:${CUCASCADE_CXX_WARNING_FLAGS};-Wno-null-dereference>
+      ${CUCASCADE_CUDA_WARNING_FLAGS})
+
+  target_link_libraries(
+    cucascade_s3_parquet_benchmark
+    PRIVATE cucascade_cudf cucascade_io kvikio::kvikio ${AWSSDK_LINK_LIBRARIES}
+            CUDA::cudart_static)
+
+  # S3 range-read I/O benchmark: raw column-chunk range reads (rest vector-io /
+  # host->device vs kvikIO datasource) into host/device, without parquet decode.
+  add_executable(cucascade_s3_parquet_io_benchmark
+                 ${CMAKE_CURRENT_SOURCE_DIR}/parquet_s3_io_benchmark.cpp)
+
+  target_compile_options(
+    cucascade_s3_parquet_io_benchmark
+    PRIVATE
+      $<$<COMPILE_LANGUAGE:CXX>:${CUCASCADE_CXX_WARNING_FLAGS};-Wno-null-dereference>
+      ${CUCASCADE_CUDA_WARNING_FLAGS})
+
+  target_link_libraries(
+    cucascade_s3_parquet_io_benchmark
+    PRIVATE cucascade_cudf cucascade_io kvikio::kvikio ${AWSSDK_LINK_LIBRARIES}
+            CUDA::cudart_static)
+endif()

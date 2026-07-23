@@ -18,8 +18,9 @@
 #include "utils/cudf_test_utils.hpp"
 #include "utils/mock_test_utils.hpp"
 
-#include <cucascade/data/cpu_data_representation.hpp>
-#include <cucascade/data/gpu_data_representation.hpp>
+#include <cucascade/cudf/builtin_converters.hpp>
+#include <cucascade/cudf/gpu_data_representation.hpp>
+#include <cucascade/cudf/host_data_representation.hpp>
 #include <cucascade/data/representation_converter.hpp>
 
 #include <rmm/cuda_stream.hpp>
@@ -101,7 +102,8 @@ TEST_CASE("representation_converter_registry register custom converter",
       registry.register_converter<custom_test_representation, another_test_representation>(
         [](idata_representation& source,
            const memory::memory_space* target_space,
-           rmm::cuda_stream_view /*stream*/) -> std::unique_ptr<idata_representation> {
+           rmm::cuda_stream_view /*stream*/,
+           memory::reservation* /*reservation*/) -> std::unique_ptr<idata_representation> {
           auto& src = source.cast<custom_test_representation>();
           return std::make_unique<another_test_representation>(
             static_cast<double>(src.get_value()), *const_cast<memory::memory_space*>(target_space));
@@ -114,7 +116,8 @@ TEST_CASE("representation_converter_registry register custom converter",
     registry.register_converter<custom_test_representation, another_test_representation>(
       [](idata_representation& source,
          const memory::memory_space* target_space,
-         rmm::cuda_stream_view /*stream*/) -> std::unique_ptr<idata_representation> {
+         rmm::cuda_stream_view /*stream*/,
+         memory::reservation* /*reservation*/) -> std::unique_ptr<idata_representation> {
         auto& src = source.cast<custom_test_representation>();
         return std::make_unique<another_test_representation>(
           static_cast<double>(src.get_value()), *const_cast<memory::memory_space*>(target_space));
@@ -126,7 +129,10 @@ TEST_CASE("representation_converter_registry register custom converter",
       registry.register_converter<custom_test_representation, another_test_representation>(
         [](idata_representation&,
            const memory::memory_space*,
-           rmm::cuda_stream_view) -> std::unique_ptr<idata_representation> { return nullptr; });
+           rmm::cuda_stream_view,
+           memory::reservation* /*reservation*/) -> std::unique_ptr<idata_representation> {
+          return nullptr;
+        });
     };
     REQUIRE_THROWS_AS(duplicate_register(), std::runtime_error);
   }
@@ -148,7 +154,8 @@ TEST_CASE("representation_converter_registry has_converter", "[representation_co
     registry.register_converter<custom_test_representation, another_test_representation>(
       [](idata_representation& source,
          const memory::memory_space* target_space,
-         rmm::cuda_stream_view /*stream*/) -> std::unique_ptr<idata_representation> {
+         rmm::cuda_stream_view /*stream*/,
+         memory::reservation* /*reservation*/) -> std::unique_ptr<idata_representation> {
         auto& src = source.cast<custom_test_representation>();
         return std::make_unique<another_test_representation>(
           static_cast<double>(src.get_value()), *const_cast<memory::memory_space*>(target_space));
@@ -162,7 +169,8 @@ TEST_CASE("representation_converter_registry has_converter", "[representation_co
     registry.register_converter<custom_test_representation, another_test_representation>(
       [](idata_representation& source,
          const memory::memory_space* target_space,
-         rmm::cuda_stream_view /*stream*/) -> std::unique_ptr<idata_representation> {
+         rmm::cuda_stream_view /*stream*/,
+         memory::reservation* /*reservation*/) -> std::unique_ptr<idata_representation> {
         auto& src = source.cast<custom_test_representation>();
         return std::make_unique<another_test_representation>(
           static_cast<double>(src.get_value()), *const_cast<memory::memory_space*>(target_space));
@@ -185,7 +193,8 @@ TEST_CASE("representation_converter_registry has_converter_for runtime lookup",
   registry.register_converter<custom_test_representation, another_test_representation>(
     [](idata_representation& source,
        const memory::memory_space* target_space,
-       rmm::cuda_stream_view /*stream*/) -> std::unique_ptr<idata_representation> {
+       rmm::cuda_stream_view /*stream*/,
+       memory::reservation* /*reservation*/) -> std::unique_ptr<idata_representation> {
       auto& src = source.cast<custom_test_representation>();
       return std::make_unique<another_test_representation>(
         static_cast<double>(src.get_value()), *const_cast<memory::memory_space*>(target_space));
@@ -220,7 +229,8 @@ TEST_CASE("representation_converter_registry unregister_converter", "[representa
     registry.register_converter<custom_test_representation, another_test_representation>(
       [](idata_representation& source,
          const memory::memory_space* target_space,
-         rmm::cuda_stream_view /*stream*/) -> std::unique_ptr<idata_representation> {
+         rmm::cuda_stream_view /*stream*/,
+         memory::reservation* /*reservation*/) -> std::unique_ptr<idata_representation> {
         auto& src = source.cast<custom_test_representation>();
         return std::make_unique<another_test_representation>(
           static_cast<double>(src.get_value()), *const_cast<memory::memory_space*>(target_space));
@@ -238,7 +248,10 @@ TEST_CASE("representation_converter_registry unregister_converter", "[representa
     registry.register_converter<custom_test_representation, another_test_representation>(
       [](idata_representation&,
          const memory::memory_space*,
-         rmm::cuda_stream_view) -> std::unique_ptr<idata_representation> { return nullptr; });
+         rmm::cuda_stream_view,
+         memory::reservation* /*reservation*/) -> std::unique_ptr<idata_representation> {
+        return nullptr;
+      });
 
     registry.unregister_converter<custom_test_representation, another_test_representation>();
 
@@ -247,7 +260,10 @@ TEST_CASE("representation_converter_registry unregister_converter", "[representa
       registry.register_converter<custom_test_representation, another_test_representation>(
         [](idata_representation&,
            const memory::memory_space*,
-           rmm::cuda_stream_view) -> std::unique_ptr<idata_representation> { return nullptr; }));
+           rmm::cuda_stream_view,
+           memory::reservation* /*reservation*/) -> std::unique_ptr<idata_representation> {
+          return nullptr;
+        }));
   }
 }
 
@@ -271,7 +287,8 @@ TEST_CASE("representation_converter_registry convert with custom types",
   registry.register_converter<custom_test_representation, another_test_representation>(
     [](idata_representation& source,
        const memory::memory_space* target_space,
-       rmm::cuda_stream_view /*stream*/) -> std::unique_ptr<idata_representation> {
+       rmm::cuda_stream_view /*stream*/,
+       memory::reservation* /*reservation*/) -> std::unique_ptr<idata_representation> {
       auto& src = source.cast<custom_test_representation>();
       return std::make_unique<another_test_representation>(
         static_cast<double>(src.get_value() * 2), *const_cast<memory::memory_space*>(target_space));
@@ -305,7 +322,8 @@ TEST_CASE("representation_converter_registry convert with type_index", "[represe
   registry.register_converter<custom_test_representation, another_test_representation>(
     [](idata_representation& source,
        const memory::memory_space* target_space,
-       rmm::cuda_stream_view /*stream*/) -> std::unique_ptr<idata_representation> {
+       rmm::cuda_stream_view /*stream*/,
+       memory::reservation* /*reservation*/) -> std::unique_ptr<idata_representation> {
       auto& src = source.cast<custom_test_representation>();
       return std::make_unique<another_test_representation>(
         static_cast<double>(src.get_value()), *const_cast<memory::memory_space*>(target_space));
@@ -471,7 +489,8 @@ TEST_CASE("Converter preserves memory space properties", "[representation_conver
   registry.register_converter<custom_test_representation, another_test_representation>(
     [](idata_representation& source,
        const memory::memory_space* target_space,
-       rmm::cuda_stream_view /*stream*/) -> std::unique_ptr<idata_representation> {
+       rmm::cuda_stream_view /*stream*/,
+       memory::reservation* /*reservation*/) -> std::unique_ptr<idata_representation> {
       auto& src = source.cast<custom_test_representation>();
       return std::make_unique<another_test_representation>(
         static_cast<double>(src.get_value()), *const_cast<memory::memory_space*>(target_space));
@@ -495,7 +514,8 @@ TEST_CASE("Multiple independent converters can coexist", "[representation_conver
   registry.register_converter<custom_test_representation, another_test_representation>(
     [](idata_representation& source,
        const memory::memory_space* target_space,
-       rmm::cuda_stream_view /*stream*/) -> std::unique_ptr<idata_representation> {
+       rmm::cuda_stream_view /*stream*/,
+       memory::reservation* /*reservation*/) -> std::unique_ptr<idata_representation> {
       auto& src = source.cast<custom_test_representation>();
       return std::make_unique<another_test_representation>(
         static_cast<double>(src.get_value()), *const_cast<memory::memory_space*>(target_space));
@@ -505,7 +525,8 @@ TEST_CASE("Multiple independent converters can coexist", "[representation_conver
   registry.register_converter<another_test_representation, custom_test_representation>(
     [](idata_representation& source,
        const memory::memory_space* target_space,
-       rmm::cuda_stream_view /*stream*/) -> std::unique_ptr<idata_representation> {
+       rmm::cuda_stream_view /*stream*/,
+       memory::reservation* /*reservation*/) -> std::unique_ptr<idata_representation> {
       auto& src = source.cast<another_test_representation>();
       return std::make_unique<custom_test_representation>(
         static_cast<int>(src.get_value()), *const_cast<memory::memory_space*>(target_space));
@@ -553,13 +574,19 @@ TEST_CASE("Duplicate registration error message includes type names", "[represen
   registry.register_converter<custom_test_representation, another_test_representation>(
     [](idata_representation&,
        const memory::memory_space*,
-       rmm::cuda_stream_view) -> std::unique_ptr<idata_representation> { return nullptr; });
+       rmm::cuda_stream_view,
+       memory::reservation* /*reservation*/) -> std::unique_ptr<idata_representation> {
+      return nullptr;
+    });
 
   try {
     registry.register_converter<custom_test_representation, another_test_representation>(
       [](idata_representation&,
          const memory::memory_space*,
-         rmm::cuda_stream_view) -> std::unique_ptr<idata_representation> { return nullptr; });
+         rmm::cuda_stream_view,
+         memory::reservation* /*reservation*/) -> std::unique_ptr<idata_representation> {
+        return nullptr;
+      });
     FAIL("Expected exception to be thrown");
   } catch (const std::runtime_error& e) {
     std::string msg = e.what();
